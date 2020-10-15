@@ -7,25 +7,96 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.ServiceConnection;
 import android.graphics.Color;
 import android.os.Bundle;
+import android.os.IBinder;
+import android.preference.PreferenceManager;
+import android.util.Log;
 import android.widget.TextView;
+import android.widget.Toast;
 
 public class MainActivity extends AppCompatActivity {
 
     private static String STATUS_PLUGGED_IN = "HEADPHONE PLUGGED IN";
     private static String STATUS_PLUGGED_OUT = "HEADPHONE PLUGGED OUT";
-    HeadphoneReceiver mReceiver;
+    public static String ACTION_RECEIVE_TIME = "action_receive_time";
+
+
+    //  TimeReceiver mReceiver;
     TextView headsetStatus;
     TextView elapsedTime;
+    boolean startedFromNotification = false;
+
+
+    HeadphoneService.ServiceToActivity mInterface = new HeadphoneService.ServiceToActivity() {
+        @Override
+        public void receiveMessage(String timeStamp, String headphoneStatus) {
+
+            elapsedTime.setText(timeStamp);
+            headsetStatus.setText(headphoneStatus);
+
+        }
+    };
+
+    HeadphoneService myService;
+
+    private ServiceConnection mConnection;
+
+    private ServiceConnection initializeServiceConnection() {
+        Log.d(MainActivity.class.getName(), "initializeServiceConnection called");
+        return new ServiceConnection() {
+            @Override
+            public void onServiceConnected(ComponentName componentName, IBinder iBinder) {
+                Toast.makeText(MainActivity.this, "onServiceConnected called", Toast.LENGTH_SHORT).show();
+            /*Log.d(MainActivity.class.getName(), "onServiceConnected called");
+            // We've binded to LocalService, cast the IBinder and get LocalService instance
+            HeadphoneService.LocalBinder binder = (HeadphoneService.LocalBinder) iBinder;
+            myService = binder.getServiceInstance(); //Get instance of your service!
+            myService.setInterface(mInterface);*/
+                serviceConnected(iBinder);
+            }
+
+            @Override
+            public void onServiceDisconnected(ComponentName componentName) {
+                Log.d(MainActivity.class.getName(), "onServiceDisconnected called");
+            }
+        };
+    }
+
+
+    private void serviceConnected(IBinder iBinder) {
+        Toast.makeText(MainActivity.this, "onServiceConnected called", Toast.LENGTH_SHORT).show();
+        Log.d(MainActivity.class.getName(), "onServiceConnected called");
+        // We've binded to LocalService, cast the IBinder and get LocalService instance
+        HeadphoneService.LocalBinder binder = (HeadphoneService.LocalBinder) iBinder;
+        myService = binder.getServiceInstance(); //Get instance of your service!
+        myService.setInterface(mInterface);
+        if (startedFromNotification) {
+    //        myService.scheduleTimer(/*notificationMessage*/);
+            myService.scheduleTimerThree();
+       //     myService.scheduleTimerTwo();
+            Log.d(MainActivity.class.getName(), " notification message before schedule timer from notification = " + notificationMessage);
+        }
+        if(myService.isForeground){
+            myService.stopForeground(true);
+            myService.isForeground = false;
+        }
+
+
+
+    }
 
     @Override
-    protected void onDestroy() {
-        unregisterReceiver(mReceiver);
-        super.onDestroy();
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        Log.d(MainActivity.class.getName(), "onNewIntent called");
+        setIntent(intent);
+
     }
 
     @Override
@@ -34,112 +105,77 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
         headsetStatus = (TextView) findViewById(R.id.headphone_status);
         elapsedTime = (TextView) findViewById(R.id.time_elapsed);
-        mReceiver = new HeadphoneReceiver();
-        IntentFilter intentFilter = new IntentFilter();
-        intentFilter.addAction(Intent.ACTION_HEADSET_PLUG);
-        registerReceiver(mReceiver, intentFilter);
+
+        Intent serviceIntent = new Intent(this, HeadphoneService.class);
+        //  i.putExtra("MyInterface", mInterface);
+        startService(serviceIntent);
+        mConnection = initializeServiceConnection();
+        bindService(serviceIntent, mConnection, 0);
+        Log.d(MainActivity.class.getName(), "onCreate called");
+        Log.d(MainActivity.class.getName(), "is mConnection null " + (mConnection == null));
+
 
     }
 
-    private class HeadphoneReceiver extends BroadcastReceiver {
+    boolean firstStart;
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        Log.d(MainActivity.class.getName(), "onStart called");
+    }
 
 
-        private static final String PRIMARY_CHANNEL_ID = "primary_notification_channel";
-        private NotificationManager mNotifyManager;
-        private static final int NOTIFICATION_ID = 0;
-        private boolean isNotifyManagerCreated = false;
+    @Override
+    public void onPause() {
+//        unregisterReceiver(mReceiver);
+        super.onPause();
+        Log.d(MainActivity.class.getName(), "onPause called");
+        PreferenceManager.getDefaultSharedPreferences(this).edit().putBoolean("isActive", false).apply();
+    }
 
-        public void createNotificationChannel() {
-            if (!isNotifyManagerCreated) {
-                mNotifyManager = (NotificationManager)
-                        getSystemService(NOTIFICATION_SERVICE);
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        Log.d(MainActivity.class.getName(), "onDestroy called");
+        PreferenceManager.getDefaultSharedPreferences(this).edit().putBoolean("isActive", false).apply();
+        startedFromNotification = false;
+        if(myService!=null){
+            myService.startServiceAsForeground();
+        }
+    }
 
-                if (android.os.Build.VERSION.SDK_INT >=
-                        android.os.Build.VERSION_CODES.O) {
-                    // Create a NotificationChannel
-                    NotificationChannel notificationChannel = new NotificationChannel(PRIMARY_CHANNEL_ID,
-                            "Mascot Notification", NotificationManager
-                            .IMPORTANCE_HIGH);
-                    notificationChannel.enableLights(true);
-                    notificationChannel.setLightColor(Color.RED);
-                    notificationChannel.enableVibration(true);
-                    notificationChannel.setDescription("Notification from Mascot");
-                    mNotifyManager.createNotificationChannel(notificationChannel);
+    String notificationMessage;
 
-                }
-                isNotifyManagerCreated = true;
+    @Override
+    public void onResume() {
+        super.onResume();
+        PreferenceManager.getDefaultSharedPreferences(this).edit().putBoolean("isActive", true).apply();
+
+
+        Intent intent = getIntent();
+        String message = intent.getStringExtra("status");
+        if (message != null) {
+            Log.d(MainActivity.class.getName(), "onResume called");
+            Log.d(MainActivity.class.getName(), "message from notification = " + message);
+            startedFromNotification = true;
+            notificationMessage = message;
+           /* if (myService == null) {
+                initializeServiceConnection();
+            }*/
+        }
+
+      /*  if(myService!=null){
+            if(myService.isForeground){
+                myService.stopForeground(true);
+                myService.isForeground = false;
             }
-        }
-
-        private NotificationCompat.Builder getNotificationBuilder(String title, String content) {
-
-            NotificationCompat.Builder notifyBuilder = new NotificationCompat.Builder(MainActivity.this, PRIMARY_CHANNEL_ID)
-                    .setContentTitle(title)
-                    .setContentText(content)
-                    .setSmallIcon(R.drawable.ic_headset);
-            return notifyBuilder;
-
-        }
-
-        private void sendNotification(String title, String content) {
-            createNotificationChannel();
-            NotificationCompat.Builder notifyBuilder = getNotificationBuilder(title, content);
-            mNotifyManager.notify(NOTIFICATION_ID, notifyBuilder.build());
-        }
-
-        @Override
-        public void onReceive(Context context, Intent intent) {
-
-            String intentAction = intent.getAction();
-            if (!isInitialStickyBroadcast() && intentAction != null && intentAction.equals(Intent.ACTION_HEADSET_PLUG)) {
-                int state = intent.getIntExtra("state", -1);
-                switch (state) {
-                    case 0: {
-
-                        //Headset unplugged
-                        //show notification that headset was unplugged (although only when it was plugged to begin with.)
-
-                        headsetStatus.setText(STATUS_PLUGGED_OUT);
-                        sendNotification("Headset UnPlugged", "You've unplugged the headsets");
-                        break;
-
-                    }
-                    case 1: {
-
-                        //Headset plugged
-                        //show notification that headset was plugged
-                        headsetStatus.setText(STATUS_PLUGGED_IN);
-                        sendNotification("Headset Plugged", "You've plugged the headsets");
-                        break;
-
-                    }
-                }
-
-
-            }
-        }
-
-        /*private void addNotification() {
-         *//* NotificationCompat.Builder builder =
-                    new NotificationCompat.Builder(MainActivity.this, PRIMARY_CHANNEL_ID)
-                            .setSmallIcon(R.drawable.abc)
-                            .setContentTitle("Notifications Example")
-                            .setContentText("This is a test notification");*//*
-
-// on notification tap, open activity
-            Intent notificationIntent = new Intent(MainActivity.this, MainActivity.class);
-
-            //wrapping notification intent into pendingIntent
-
-            PendingIntent contentIntent = PendingIntent.getActivity(MainActivity.this, 0, notificationIntent,
-                    PendingIntent.FLAG_UPDATE_CURRENT);
-            builder.setContentIntent(contentIntent);
-
-            // Add as notification
-            NotificationManager manager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-            manager.notify(0, builder.build());
         }*/
 
-
     }
+       /* if(myService==null){
+            firstStart = true;
+        }*/
 }
+
+
